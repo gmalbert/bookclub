@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Streamlit Secrets
+.streamlit/secrets.toml
+
+# API Keys and Secrets
+token.txt
+*.key
+*.pem
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (optional - uncomment if you don't want to commit your book selections)
+# book_selections.csv
+/Scripts
+*.cfg
+etc/jupyter/nbconfig/notebook.d/pydeck.json
+/share/jupyter
+.github/copilot-instructions.md
+debug_api_response.json
+DEPLOYMENT.md
