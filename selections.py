@@ -54,6 +54,23 @@ def load_api_token():
         st.error(f"Error loading API token: {str(e)}")
         return None
 
+def safe_display_image(image_url, width=150, fallback_text="📚 Cover unavailable"):
+    """
+    Safely display an image with proper error handling for Streamlit image loading issues
+    """
+    if not image_url or not isinstance(image_url, str) or not image_url.strip():
+        st.write("📚 No cover")
+        return
+    
+    try:
+        # Try to display the image
+        st.image(image_url, width=width)
+    except Exception as e:
+        # If image loading fails, show fallback text
+        st.write(fallback_text)
+        # Optionally log the error for debugging
+        # st.caption(f"Debug: {str(e)[:50]}...")
+
 def search_hardcover_api(author=None, title=None, genre=None):
     """
     Search Hardcover API for books based on criteria using the search endpoint
@@ -181,6 +198,131 @@ def save_book_to_list(book_data):
         
     except Exception as e:
         return False, f"Error saving book: {str(e)}"
+
+def load_selection_history():
+    """
+    Load the selection history from CSV file
+    """
+    try:
+        df = pd.read_csv('selection_history.csv')
+        return df
+    except FileNotFoundError:
+        # Create empty DataFrame with required columns if file doesn't exist
+        columns = ['selection_date', 'book_id', 'title', 'author_names', 'genres', 
+                  'release_year', 'pages', 'rating', 'selection_round']
+        df = pd.DataFrame(columns=columns)
+        return df
+    except Exception as e:
+        st.error(f"Error loading selection history: {str(e)}")
+        return pd.DataFrame()
+
+def get_last_selection():
+    """
+    Get the most recent book selection from history
+    """
+    history_df = load_selection_history()
+    if history_df.empty:
+        return None
+    
+    # Sort by selection_round (or selection_date) and get the last one
+    last_selection = history_df.sort_values('selection_round', ascending=False).iloc[0]
+    return last_selection
+
+def get_primary_genre(genres_string):
+    """
+    Extract the primary (first) genre from a comma-separated genres string
+    """
+    if pd.isna(genres_string) or genres_string == '':
+        return ''
+    genres = [g.strip() for g in str(genres_string).split(',')]
+    return genres[0] if genres else ''
+
+def get_eligible_books_for_selection():
+    """
+    Get books eligible for random selection (filtering out previous selections, same author, same genre)
+    """
+    current_books = load_book_list()
+    if current_books.empty:
+        return current_books, "No books in your list"
+    
+    history_df = load_selection_history()
+    
+    # If no history, all books are eligible
+    if history_df.empty:
+        return current_books, f"All {len(current_books)} books eligible (no previous selections)"
+    
+    # Get the last selection
+    last_selection = get_last_selection()
+    last_author = last_selection['author_names']
+    last_genre = get_primary_genre(last_selection['genres'])
+    
+    # Filter out books
+    eligible_books = current_books.copy()
+    
+    # 1. Remove previously selected books
+    selected_book_ids = set(history_df['book_id'].tolist())
+    eligible_books = eligible_books[~eligible_books['id'].isin(selected_book_ids)]
+    
+    # 2. Remove books by same author as last selection
+    eligible_books = eligible_books[eligible_books['author_names'] != last_author]
+    
+    # 3. Remove books with same primary genre as last selection
+    if last_genre:
+        eligible_books = eligible_books[eligible_books['genres'].apply(get_primary_genre) != last_genre]
+    
+    status_msg = f"{len(eligible_books)} books eligible"
+    if len(eligible_books) < len(current_books):
+        filtered_out = len(current_books) - len(eligible_books)
+        status_msg += f" ({filtered_out} filtered out: previous selections, same author '{last_author}', same genre '{last_genre}')"
+    
+    return eligible_books, status_msg
+
+def select_random_book():
+    """
+    Select a random book from eligible books
+    """
+    eligible_books, status = get_eligible_books_for_selection()
+    
+    if eligible_books.empty:
+        return None, status
+    
+    # Select random book
+    selected_book = eligible_books.sample(n=1).iloc[0]
+    return selected_book.to_dict(), status
+
+def save_book_selection(book_data):
+    """
+    Save a book selection to the history
+    """
+    try:
+        history_df = load_selection_history()
+        
+        # Determine the next round number
+        next_round = 1 if history_df.empty else history_df['selection_round'].max() + 1
+        
+        # Create new selection record
+        selection_row = {
+            'selection_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'book_id': book_data['id'],
+            'title': book_data['title'],
+            'author_names': book_data['author_names'],
+            'genres': book_data['genres'],
+            'release_year': book_data.get('release_year', ''),
+            'pages': book_data.get('pages', ''),
+            'rating': book_data.get('rating', ''),
+            'selection_round': next_round
+        }
+        
+        # Add new selection to DataFrame
+        new_row = pd.DataFrame([selection_row])
+        history_df = pd.concat([history_df, new_row], ignore_index=True)
+        
+        # Save to CSV
+        history_df.to_csv('selection_history.csv', index=False)
+        return True, f"Book selected for Round {next_round}!"
+        
+    except Exception as e:
+        return False, f"Error saving selection: {str(e)}"
 
 def generate_pdf_data(book_list_df):
     """
@@ -321,10 +463,8 @@ def display_book_results(api_response):
             with col1:
                 # Display book cover if available
                 image_data = book.get('image', {})
-                if image_data and image_data.get('url'):
-                    st.image(image_data['url'], width=150)
-                else:
-                    st.write("📚 No cover")
+                image_url = image_data.get('url') if image_data else None
+                safe_display_image(image_url, width=150)
                 
                 # Check if already added (simple check)
                 try:
@@ -439,6 +579,10 @@ if 'show_add_confirmation' not in st.session_state:
     st.session_state.show_add_confirmation = False
 if 'book_to_add' not in st.session_state:
     st.session_state.book_to_add = None
+if 'show_random_selection' not in st.session_state:
+    st.session_state.show_random_selection = False
+if 'random_selected_book' not in st.session_state:
+    st.session_state.random_selected_book = None
 
 # Book list section in sidebar
 st.sidebar.header("Current Book List")
@@ -487,6 +631,38 @@ if st.sidebar.button("📚 Go to Search", type="primary", use_container_width=Tr
 if st.sidebar.button("📋 View My Book List", use_container_width=True):
     st.session_state.show_full_list = True
     st.rerun()
+
+# Random Selection Section
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎲 Random Selection")
+
+# Show last selection info
+try:
+    last_selection = get_last_selection()
+    if last_selection is not None:
+        st.sidebar.caption(f"**Last Pick:** {last_selection['title']}")
+        st.sidebar.caption(f"**Author:** {last_selection['author_names']}")
+        st.sidebar.caption(f"**Genre:** {get_primary_genre(last_selection['genres'])}")
+    else:
+        st.sidebar.caption("No previous selections")
+except:
+    st.sidebar.caption("Error loading selection history")
+
+# Check eligible books
+try:
+    eligible_books, status = get_eligible_books_for_selection()
+    st.sidebar.caption(status)
+    
+    # Random selection button
+    if len(eligible_books) > 0:
+        if st.sidebar.button("🎲 Pick Random Book", type="secondary", use_container_width=True):
+            st.session_state.show_random_selection = True
+            st.rerun()
+    else:
+        st.sidebar.info("No eligible books for selection")
+        
+except Exception as e:
+    st.sidebar.error(f"Selection error: {str(e)}")
 
 st.sidebar.markdown("---")
 
@@ -538,7 +714,7 @@ st.markdown(f"""
     <img src="data:image/png;base64,{base64.b64encode(open(path.join(DATA_DIR, 'book_club_logo.png'), 'rb').read()).decode()}" 
          width="200" style="vertical-align: middle;">
     <div>
-        <h1 style="margin: 0; padding: 0;">Book Club Selections</h1>
+        <h3 style="margin: 0; padding: 0;">Book Club Selections</h3>
         <p style="margin: 0; padding: 0; font-style: italic; color: #666;">Find and manage your book club's reading selections</p>
     </div>
 </div>
@@ -554,10 +730,8 @@ if st.session_state.show_add_confirmation and st.session_state.book_to_add:
     with col1:
         # Display book cover
         image_data = book.get('image', {})
-        if image_data and image_data.get('url'):
-            st.image(image_data['url'], width=200)
-        else:
-            st.write("📚 No cover available")
+        image_url = image_data.get('url') if image_data else None
+        safe_display_image(image_url, width=200)
     
     with col2:
         st.subheader(book.get('title', 'Unknown Title'))
@@ -617,6 +791,148 @@ if st.session_state.show_add_confirmation and st.session_state.book_to_add:
             st.session_state.show_add_confirmation = False
             st.session_state.book_to_add = None
             st.rerun()
+
+elif st.session_state.show_random_selection:
+    # Random selection page
+    st.header("🎲 Random Book Selection")
+    
+    # Show last selection context
+    try:
+        last_selection = get_last_selection()
+        if last_selection is not None:
+            st.info(f"**Previous Selection:** {last_selection['title']} by {last_selection['author_names']} ({get_primary_genre(last_selection['genres'])})")
+    except:
+        pass
+    
+    # Get eligible books and show status
+    try:
+        eligible_books, status = get_eligible_books_for_selection()
+        st.write(f"**Status:** {status}")
+        
+        if len(eligible_books) == 0:
+            st.warning("⚠️ No books are eligible for selection with current filtering rules.")
+            st.info("All books have been previously selected, or they have the same author/genre as the last selection.")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔍 Back to Search", use_container_width=True):
+                    st.session_state.show_random_selection = False
+                    st.rerun()
+            with col2:
+                if st.button("📋 View Book List", use_container_width=True):
+                    st.session_state.show_random_selection = False
+                    st.session_state.show_full_list = True
+                    st.rerun()
+        
+        else:
+            # Show eligible books preview
+            st.subheader(f"📚 {len(eligible_books)} Eligible Books")
+            
+            # Preview first few eligible books
+            preview_count = min(3, len(eligible_books))
+            for i, (_, book) in enumerate(eligible_books.head(preview_count).iterrows()):
+                st.caption(f"• {book['title']} by {book['author_names']} ({get_primary_genre(book['genres'])})")
+            
+            if len(eligible_books) > preview_count:
+                st.caption(f"... and {len(eligible_books) - preview_count} more")
+            
+            st.markdown("---")
+            
+            # Random selection button
+            col1, col2, col3 = st.columns([2, 1, 2])
+            
+            with col2:
+                if st.button("🎲 SELECT RANDOM BOOK", type="primary", use_container_width=True):
+                    selected_book, selection_status = select_random_book()
+                    if selected_book:
+                        st.session_state.random_selected_book = selected_book
+                        st.rerun()
+                    else:
+                        st.error(f"Selection failed: {selection_status}")
+            
+            # Show selected book if one was chosen
+            if st.session_state.random_selected_book:
+                st.success("🎉 **Book Selected!**")
+                
+                selected_book = st.session_state.random_selected_book
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    # Display book cover if available
+                    safe_display_image(selected_book.get('image_url'), width=200, fallback_text="📖 Cover not available")
+                
+                with col2:
+                    st.markdown(f"### {selected_book['title']}")
+                    st.write(f"**Author:** {selected_book['author_names']}")
+                    
+                    info_items = []
+                    if selected_book.get('release_year'):
+                        info_items.append(f"Published: {int(selected_book['release_year'])}")
+                    if selected_book.get('pages'):
+                        info_items.append(f"Pages: {selected_book['pages']}")
+                    
+                    if info_items:
+                        st.write(f"**Details:** {' | '.join(info_items)}")
+                    
+                    if selected_book.get('rating'):
+                        rating = selected_book['rating']
+                        stars = "⭐" * int(rating)
+                        st.write(f"**Rating:** {rating:.1f}/5 {stars}")
+                    
+                    if selected_book.get('genres'):
+                        st.write(f"**Genres:** {selected_book['genres']}")
+                
+                if selected_book.get('description'):
+                    st.write("**Description:**")
+                    st.write(selected_book['description'])
+                
+                st.markdown("---")
+                
+                # Confirmation buttons
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button("✅ Confirm Selection", type="primary", use_container_width=True):
+                        success, message = save_book_selection(selected_book)
+                        if success:
+                            st.success(message)
+                            st.balloons()
+                            # Reset state
+                            st.session_state.show_random_selection = False
+                            st.session_state.random_selected_book = None
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                with col2:
+                    if st.button("🎲 Pick Different Book", use_container_width=True):
+                        st.session_state.random_selected_book = None
+                        st.rerun()
+                
+                with col3:
+                    if st.button("❌ Cancel", use_container_width=True):
+                        st.session_state.show_random_selection = False
+                        st.session_state.random_selected_book = None
+                        st.rerun()
+            
+            else:
+                # Navigation options when no book selected yet
+                st.markdown("---")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🔍 Back to Search", use_container_width=True):
+                        st.session_state.show_random_selection = False
+                        st.rerun()
+                with col2:
+                    if st.button("📋 View Book List", use_container_width=True):
+                        st.session_state.show_random_selection = False
+                        st.session_state.show_full_list = True
+                        st.rerun()
+        
+    except Exception as e:
+        st.error(f"Error during random selection: {str(e)}")
+        st.button("🔍 Back to Search")
 
 elif not st.session_state.show_full_list:
     # Search interface
@@ -806,14 +1122,7 @@ else:
                 col1, col2, col3 = st.columns([1, 3, 1])
                 
                 with col1:
-                    image_url = book['image_url']
-                    if image_url and isinstance(image_url, str) and image_url.strip():
-                        try:
-                            st.image(image_url, width=100)
-                        except:
-                            st.write("📚")
-                    else:
-                        st.write("📚")
+                    safe_display_image(book['image_url'], width=100, fallback_text="📚")
                 
                 with col2:
                     st.subheader(book['title'])
