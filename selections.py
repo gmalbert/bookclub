@@ -8,6 +8,7 @@ import requests
 import json
 import random
 import base64
+import time
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -138,12 +139,77 @@ def search_hardcover_api(author=None, title=None, genre=None):
         st.error(f"Failed to parse API response: {str(e)}")
         return None
 
+def clean_duplicate_books():
+    """
+    Remove duplicate books from the CSV file (keeps the first occurrence)
+    """
+    try:
+        df = pd.read_csv(path.join(DATA_DIR, 'book_selections.csv'))
+        if not df.empty:
+            # Remove duplicates based on 'id' column, keep first occurrence
+            original_count = len(df)
+            df_cleaned = df.drop_duplicates(subset=['id'], keep='first')
+            removed_count = original_count - len(df_cleaned)
+            
+            if removed_count > 0:
+                # Save cleaned data back to CSV
+                df_cleaned.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
+                return removed_count
+            return 0
+    except Exception as e:
+        st.error(f"Error cleaning duplicates: {str(e)}")
+        return 0
+
+def remove_last_selection():
+    """
+    Remove the most recent book selection from history
+    """
+    try:
+        history_df = load_selection_history()
+        if history_df.empty:
+            return False, "No selections to remove"
+        
+        # Get the last selection info before removing
+        last_selection = history_df.sort_values('selection_round', ascending=False).iloc[0]
+        last_title = last_selection['title']
+        last_round = last_selection['selection_round']
+        
+        # Remove the last selection (highest round number)
+        max_round = history_df['selection_round'].max()
+        updated_history = history_df[history_df['selection_round'] != max_round]
+        
+        # Save updated history back to CSV
+        updated_history.to_csv(path.join(DATA_DIR, 'selection_history.csv'), index=False)
+        
+        return True, f"Removed '{last_title}' from Round {last_round}"
+        
+    except Exception as e:
+        return False, f"Error removing selection: {str(e)}"
+
+def clear_all_selections():
+    """
+    Clear all book selections from history
+    """
+    try:
+        # Create empty DataFrame with required columns
+        columns = ['selection_date', 'book_id', 'title', 'author_names', 'genres', 
+                  'release_year', 'pages', 'rating', 'selection_round']
+        empty_df = pd.DataFrame(columns=columns)
+        
+        # Save empty DataFrame to CSV
+        empty_df.to_csv(path.join(DATA_DIR, 'selection_history.csv'), index=False)
+        
+        return True, "All selections cleared"
+        
+    except Exception as e:
+        return False, f"Error clearing selections: {str(e)}"
+
 def load_book_list():
     """
     Load the current book list from CSV file
     """
     try:
-        df = pd.read_csv('book_selections.csv')
+        df = pd.read_csv(path.join(DATA_DIR, 'book_selections.csv'))
         return df
     except FileNotFoundError:
         # Create empty DataFrame with required columns if file doesn't exist
@@ -164,7 +230,9 @@ def save_book_to_list(book_data):
         df = load_book_list()
         
         # Check if book is already in the list
-        if not df.empty and book_data['id'] in df['id'].values:
+        # Convert both IDs to strings to ensure proper comparison
+        book_id = str(book_data['id'])
+        if not df.empty and book_id in df['id'].astype(str).values:
             return False, "Book is already in your list!"
         
         # Helper function to safely get values
@@ -193,7 +261,7 @@ def save_book_to_list(book_data):
         df = pd.concat([df, new_row], ignore_index=True)
         
         # Save to CSV
-        df.to_csv('book_selections.csv', index=False)
+        df.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
         return True, "Book added to your list!"
         
     except Exception as e:
@@ -204,7 +272,7 @@ def load_selection_history():
     Load the selection history from CSV file
     """
     try:
-        df = pd.read_csv('selection_history.csv')
+        df = pd.read_csv(path.join(DATA_DIR, 'selection_history.csv'))
         return df
     except FileNotFoundError:
         # Create empty DataFrame with required columns if file doesn't exist
@@ -318,7 +386,7 @@ def save_book_selection(book_data):
         history_df = pd.concat([history_df, new_row], ignore_index=True)
         
         # Save to CSV
-        history_df.to_csv('selection_history.csv', index=False)
+        history_df.to_csv(path.join(DATA_DIR, 'selection_history.csv'), index=False)
         return True, f"Book selected for Round {next_round}!"
         
     except Exception as e:
@@ -435,15 +503,17 @@ def display_book_results(api_response):
                         errors.append(f"{book.get('title', 'Unknown')}: {message}")
                 
                 if added_count > 0:
-                    st.success(f"🎉 Successfully added {added_count} book(s) to your list!")
+                    st.toast(f"🎉 Successfully added {added_count} book(s) to your list!", icon="📚")
                     st.balloons()
                 
                 if errors:
                     for error in errors:
-                        st.warning(f"⚠️ {error}")
+                        st.toast(f"⚠️ {error}", icon="⚠️")
                 
                 # Clear selections after adding
                 st.session_state.selected_books = {}
+                # Give toast time to display before rerunning
+                time.sleep(1.5)
                 st.rerun()
         
         with col3:
@@ -468,7 +538,7 @@ def display_book_results(api_response):
                 
                 # Check if already added (simple check)
                 try:
-                    existing_df = pd.read_csv('book_selections.csv')
+                    existing_df = pd.read_csv(path.join(DATA_DIR, 'book_selections.csv'))
                     already_added = book_id in existing_df['id'].values if not existing_df.empty else False
                 except:
                     already_added = False
@@ -664,7 +734,53 @@ try:
 except Exception as e:
     st.sidebar.error(f"Selection error: {str(e)}")
 
+# Selection History Management
+try:
+    history_df = load_selection_history()
+    if not history_df.empty:
+        st.sidebar.markdown("#### 📜 Selection History")
+        
+        # Remove last selection button
+        if st.sidebar.button("🔙 Remove Last Selection", use_container_width=True, help="Remove the most recent book selection"):
+            success, message = remove_last_selection()
+            if success:
+                st.toast(f"🗑️ {message}", icon="✅")
+                st.rerun()
+            else:
+                st.toast(f"❌ {message}", icon="⚠️")
+        
+        # Clear all selections button (with confirmation)
+        if 'confirm_clear_selections' not in st.session_state:
+            st.session_state.confirm_clear_selections = False
+        
+        if not st.session_state.confirm_clear_selections:
+            if st.sidebar.button("🗑️ Clear All Selections", use_container_width=True, help="Remove all selection history"):
+                st.session_state.confirm_clear_selections = True
+                st.rerun()
+        else:
+            st.sidebar.warning("⚠️ This will delete ALL selection history!")
+            col1, col2 = st.sidebar.columns(2)
+            with col1:
+                if st.button("✅ Confirm", key="confirm_clear", use_container_width=True):
+                    success, message = clear_all_selections()
+                    if success:
+                        st.toast(f"🧹 {message}", icon="✅")
+                        st.session_state.confirm_clear_selections = False
+                        st.rerun()
+                    else:
+                        st.toast(f"❌ {message}", icon="⚠️")
+                        st.session_state.confirm_clear_selections = False
+            with col2:
+                if st.button("❌ Cancel", key="cancel_clear", use_container_width=True):
+                    st.session_state.confirm_clear_selections = False
+                    st.rerun()
+
+except Exception as e:
+    st.sidebar.error(f"Selection history error: {str(e)}")
+
 st.sidebar.markdown("---")
+
+
 
 # Test basic interactivity (comment out if not needed)
 # st.sidebar.markdown("### 🧪 Test Section")
@@ -701,12 +817,25 @@ with st.sidebar.form("manual_entry"):
             }
             success, message = save_book_to_list(manual_book)
             if success:
-                st.sidebar.success("✅ Book added manually!")
+                st.toast("📚 Book added manually!", icon="✅")
+                # Give toast time to display before rerunning
+                time.sleep(1.5)
                 st.rerun()
             else:
                 st.sidebar.error(f"❌ {message}")
         else:
             st.sidebar.warning("Please enter title and author")
+# Cleanup Section
+st.sidebar.markdown("### 🧹 Maintenance")
+if st.sidebar.button("🗑️ Remove Duplicate Books", use_container_width=True, help="Clean up any duplicate entries in your book list"):
+    removed_count = clean_duplicate_books()
+    if removed_count > 0:
+        st.toast(f"🧹 Removed {removed_count} duplicate book(s)!", icon="✅")
+        st.rerun()
+    else:
+        st.toast("✅ No duplicates found!", icon="🧹")
+
+# st.sidebar.markdown("---")
 
 # Header with logo and title right next to each other
 st.markdown(f"""
@@ -771,11 +900,13 @@ if st.session_state.show_add_confirmation and st.session_state.book_to_add:
         if st.button("✅ Yes, Add This Book", type="primary", use_container_width=True):
             success, message = save_book_to_list(book)
             if success:
-                st.success(f"✅ {message}")
+                st.toast(f"📚 {message}", icon="✅")
                 st.balloons()
                 # Clear the confirmation state
                 st.session_state.show_add_confirmation = False
                 st.session_state.book_to_add = None
+                # Give toast time to display before rerunning
+                time.sleep(1.5)
                 st.rerun()
             else:
                 st.error(f"❌ {message}")
@@ -896,11 +1027,13 @@ elif st.session_state.show_random_selection:
                     if st.button("✅ Confirm Selection", type="primary", use_container_width=True):
                         success, message = save_book_selection(selected_book)
                         if success:
-                            st.success(message)
+                            st.toast(f"🎲 {message}", icon="✅")
                             st.balloons()
                             # Reset state
                             st.session_state.show_random_selection = False
                             st.session_state.random_selected_book = None
+                            # Give toast time to display before rerunning
+                            time.sleep(1.5)
                             st.rerun()
                         else:
                             st.error(message)
@@ -1095,7 +1228,7 @@ else:
                         use_container_width=True, disabled=button_disabled):
                 # Remove books from DataFrame
                 updated_df = book_list_df[~book_list_df['id'].isin(st.session_state.books_to_remove)]
-                updated_df.to_csv('book_selections.csv', index=False)
+                updated_df.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
                 
                 # Update session state
                 for book_id in st.session_state.books_to_remove:
@@ -1154,7 +1287,7 @@ else:
                 
                 with col3:
                     # Remove checkbox - better than button
-                    remove_key = f"remove_check_{book['id']}"
+                    remove_key = f"remove_check_list_{book['id']}_{idx}"
                     
                     # Initialize books_to_remove if it doesn't exist
                     if 'books_to_remove' not in st.session_state:
@@ -1190,7 +1323,7 @@ else:
                 if st.button("🗑️ Remove Selected Books", type="secondary"):
                     # Remove books from DataFrame
                     updated_df = book_list_df[~book_list_df['id'].isin(st.session_state.books_to_remove)]
-                    updated_df.to_csv('book_selections.csv', index=False)
+                    updated_df.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
                     
                     # Update session state
                     for book_id in st.session_state.books_to_remove:
@@ -1213,39 +1346,37 @@ else:
             text_list.append(f"• {book['title']} by {book['author_names']}")
         text_data = "Book Club Selections:\n\n" + "\n".join(text_list)
         
-        # Force horizontal layout with very narrow columns and no gap
-        col1, col2, col3, col4 = st.columns([0.8, 0.8, 0.8, 8], gap="small")
+        # Responsive layout - stacked vertically for better mobile experience
+        st.download_button(
+            label="📊 Download as Excel/CSV",
+            data=csv_data,
+            file_name="book_club_selections.csv",
+            mime="text/csv",
+            use_container_width=True,
+            help="Download your book list as a spreadsheet file"
+        )
         
-        with col1:
-            st.download_button(
-                label="⬇️ Excel",
-                data=csv_data,
-                file_name="book_club_selections.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            st.download_button(
-                label="📝 Text",
-                data=text_data,
-                file_name="book_club_selections.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
+        st.download_button(
+            label="📝 Download as Text List",
+            data=text_data,
+            file_name="book_club_selections.txt",
+            mime="text/plain",
+            use_container_width=True,
+            help="Download as a simple text list"
+        )
             
-        with col3:
-            try:
-                pdf_data = generate_pdf_data(book_list_df)
-                st.download_button(
-                    label="📄 PDF",
-                    data=pdf_data,
-                    file_name="book_club_selections.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error("PDF error")
+        try:
+            pdf_data = generate_pdf_data(book_list_df)
+            st.download_button(
+                label="📄 Download as PDF",
+                data=pdf_data,
+                file_name="book_club_selections.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                help="Download as a formatted PDF document"
+            )
+        except Exception as e:
+            st.error(f"PDF generation error: {str(e)}")
     else:
         st.info("No books in your selection list yet. Search and add some books!")
         if st.button("Back to Search"):
