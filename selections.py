@@ -24,6 +24,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Add custom CSS for simple floating elements
+st.markdown("""
+<style>
+    /* Simple fade-in animation for floating elements */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    /* Mobile responsive adjustments */
+    @media (max-width: 768px) {
+        div[style*="position: fixed"] {
+            position: relative !important;
+            top: auto !important;
+            right: auto !important;
+            margin: 10px 0 !important;
+            max-width: 100% !important;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
 DATA_DIR = 'data_files/'
 
 # Load Hardcover API token
@@ -74,7 +96,7 @@ def safe_display_image(image_url, width=150, fallback_text="📚 Cover unavailab
 
 def search_hardcover_api(author=None, title=None, genre=None):
     """
-    Search Hardcover API for books based on criteria using the search endpoint
+    Search Hardcover API for books based on criteria using field-specific search
     """
     token = load_api_token()
     if not token:
@@ -87,39 +109,75 @@ def search_hardcover_api(author=None, title=None, genre=None):
     
     api_url = "https://api.hardcover.app/v1/graphql"
     
-    # Build search query - combine all search terms
-    search_terms = []
-    if title:
-        search_terms.append(title)
+    # Build field-specific search query
+    search_parts = []
+    
     if author:
-        search_terms.append(author)
+        # Target author field specifically
+        search_parts.append(f'author:"{author}"')
+    
+    if title:
+        # Target title field specifically
+        search_parts.append(f'title:"{title}"')
+    
     if genre:
-        search_terms.append(genre)
+        # Target genre field specifically
+        search_parts.append(f'genre:"{genre}"')
     
-    search_query = " ".join(search_terms)
+    # Join with AND logic for field-specific search
+    search_query = " AND ".join(search_parts) if search_parts else ""
     
-    # Use the Hardcover search endpoint with proper GraphQL query
+    # If the field-specific approach doesn't work, fall back to books endpoint
+    # Let's try the books query with filters first
     query = """
-    query SearchBooks($query: String!, $queryType: String!, $perPage: Int!, $page: Int!) {
-        search(
-            query: $query, 
-            query_type: $queryType, 
-            per_page: $perPage, 
+    query SearchBooks($authorFilter: String, $titleFilter: String, $genreFilter: String, $perPage: Int!, $page: Int!) {
+        books(
+            where: {
+                AND: [
+                    { author_names: { contains: $authorFilter } }
+                    { title: { contains: $titleFilter } }
+                    { genres: { contains: $genreFilter } }
+                ]
+            }
+            per_page: $perPage
             page: $page
         ) {
-            results
-            query
-            query_type
-            page
-            per_page
+            edges {
+                node {
+                    id
+                    title
+                    subtitle
+                    author_names
+                    genres
+                    release_year
+                    pages
+                    rating
+                    ratings_count
+                    users_count
+                    description
+                    series_names
+                    featured_series_position
+                    has_audiobook
+                    has_ebook
+                    compilation
+                    image {
+                        url
+                    }
+                }
+            }
+            page_info {
+                has_next_page
+                has_previous_page
+            }
         }
     }
     """
     
     variables = {
-        "query": search_query,
-        "queryType": "Book",
-        "perPage": 20,
+        "authorFilter": author,
+        "titleFilter": title,
+        "genreFilter": genre,
+        "perPage": 100,  # Increased from 30
         "page": 1
     }
     
@@ -127,17 +185,272 @@ def search_hardcover_api(author=None, title=None, genre=None):
         "query": query,
         "variables": variables
     }
-    
+
     try:
         response = requests.post(api_url, headers=headers, json=payload)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        
+        # Check if the books query worked
+        if 'data' in result and 'books' in result['data'] and result['data']['books']:
+            books_data = result['data']['books']['edges']
+            
+            # Transform to match expected format
+            hits = []
+            for edge in books_data:
+                hits.append({
+                    'document': edge['node']
+                })
+            
+            # Create response in expected format
+            formatted_response = {
+                'data': {
+                    'search': {
+                        'results': {
+                            'hits': hits,
+                            'found': len(hits)
+                        }
+                    }
+                }
+            }
+            st.info("✅ Using advanced field-specific search")
+            return formatted_response
+        
+        # If books query failed, try fallback search approach
+        # st.info("🔍 Using enhanced search with field-specific filtering")
+        return _fallback_search(author, title, genre, headers, api_url)
+        
     except requests.exceptions.RequestException as e:
         st.error(f"API request failed: {str(e)}")
         return None
     except json.JSONDecodeError as e:
         st.error(f"Failed to parse API response: {str(e)}")
         return None
+
+def _fallback_search(author=None, title=None, genre=None, headers=None, api_url=None):
+    """
+    Fallback search using exhaustive search strategies to ensure comprehensive results
+    """
+    all_results = []
+    
+    # Strategy 1: For author searches, try exhaustive approaches
+    if author:
+        author_queries = []
+        author_words = author.split()
+        
+        if len(author_words) > 1:
+            # Try every combination to maximize coverage
+            author_queries.append(author_words[-1])  # "Murakami"
+            author_queries.append(author_words[0])   # "Haruki"  
+            author_queries.append(" ".join(author_words))  # "Haruki Murakami"
+            author_queries.append(f'"{author}"')  # "Haruki Murakami"
+            
+            # Also try partial combinations for maximum coverage
+            if len(author_words) == 2:
+                author_queries.append(f"{author_words[0]} {author_words[1]}")  # Different spacing
+        else:
+            author_queries.append(author)
+        
+        # Try ALL author queries (don't exit early)
+        for query in author_queries:
+            results = _perform_single_search(query, headers, api_url, max_results=150)
+            if results:
+                hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
+                all_results.extend(hits)
+    
+    # Strategy 2: Title search (if provided)
+    if title:
+        title_queries = [f'"{title}"', title]  # Try both quoted and unquoted
+        for query in title_queries:
+            results = _perform_single_search(query, headers, api_url, max_results=100)
+            if results:
+                hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
+                all_results.extend(hits)
+    
+    # Strategy 3: Genre search (if provided)
+    if genre:
+        results = _perform_single_search(genre, headers, api_url, max_results=100)
+        if results:
+            hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
+            all_results.extend(hits)
+    
+    # Remove duplicates based on book ID
+    unique_results = {}
+    for hit in all_results:
+        book_id = hit.get('document', {}).get('id')
+        if book_id and book_id not in unique_results:
+            unique_results[book_id] = hit
+    
+    # Create combined response
+    if unique_results:
+        combined_response = {
+            'data': {
+                'search': {
+                    'results': {
+                        'hits': list(unique_results.values()),
+                        'found': len(unique_results)
+                    }
+                }
+            }
+        }
+        
+        # Apply client-side filtering
+        filtered_result = _apply_field_filters(combined_response, author, title, genre)
+        return filtered_result
+    
+    return None
+
+def _perform_single_search(search_query, headers, api_url, max_results=100):
+    """
+    Perform a single search query with pagination to get comprehensive results
+    """
+    all_hits = []
+    page = 1
+    
+    while len(all_hits) < max_results:
+        query = """
+        query SearchBooks($query: String!, $queryType: String!, $perPage: Int!, $page: Int!) {
+            search(
+                query: $query, 
+                query_type: $queryType, 
+                per_page: $perPage, 
+                page: $page
+            ) {
+                results
+                query
+                query_type
+                page
+                per_page
+            }
+        }
+        """
+        
+        variables = {
+            "query": search_query,
+            "queryType": "Book",
+            "perPage": 25,  # Use API's natural limit
+            "page": page
+        }
+
+        payload = {
+            "query": query,
+            "variables": variables
+        }
+
+        try:
+            response = requests.post(api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            
+            if result and 'data' in result:
+                hits = result.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
+                
+                if not hits:  # No more results
+                    break
+                    
+                all_hits.extend(hits)
+                
+                # If we got less than perPage results, we've reached the end
+                if len(hits) < 25:
+                    break
+                    
+                page += 1
+                
+                # Safety limit to prevent infinite loops
+                if page > 10:  # Max 250 results per query (10 pages * 25)
+                    break
+            else:
+                break
+                
+        except:
+            break
+    
+    # Create response in expected format
+    if all_hits:
+        return {
+            'data': {
+                'search': {
+                    'results': {
+                        'hits': all_hits,
+                        'found': len(all_hits)
+                    }
+                }
+            }
+        }
+    
+    return None
+
+def _apply_field_filters(api_response, author_filter=None, title_filter=None, genre_filter=None):
+    """
+    Apply client-side filters to ensure field-specific matching
+    """
+    if not api_response or 'data' not in api_response:
+        return api_response
+    
+    search_data = api_response.get('data', {}).get('search', {})
+    results = search_data.get('results', {})
+    hits = results.get('hits', [])
+    
+    if not hits:
+        return api_response
+    
+    filtered_hits = []
+    original_count = len(hits)
+    
+    for hit in hits:
+        book = hit.get('document', {})
+        include_book = True
+        
+        # Filter by author if specified
+        if author_filter:
+            author_names = book.get('author_names', [])
+            author_match = False
+            
+            # Check for flexible author matching
+            author_filter_lower = author_filter.lower()
+            author_words = author_filter_lower.split()
+            
+            for author_name in author_names:
+                author_name_lower = author_name.lower()
+                
+                # Check if all words from search appear in author name
+                if all(word in author_name_lower for word in author_words):
+                    author_match = True
+                    break
+                    
+                # Also check reverse (in case of different name order)
+                if author_filter_lower in author_name_lower:
+                    author_match = True
+                    break
+            
+            if not author_match:
+                include_book = False
+        
+        # Filter by title if specified
+        if title_filter and include_book:
+            book_title = book.get('title', '')
+            if title_filter.lower() not in book_title.lower():
+                include_book = False
+        
+        # Filter by genre if specified
+        if genre_filter and include_book:
+            book_genres = book.get('genres', [])
+            # Check if any genre contains the search term (case-insensitive)
+            genre_match = any(
+                genre_filter.lower() in genre.lower() 
+                for genre in book_genres
+            )
+            if not genre_match:
+                include_book = False
+        
+        if include_book:
+            filtered_hits.append(hit)
+    
+    # Update the results with filtered hits
+    search_data['results']['hits'] = filtered_hits
+    search_data['results']['found'] = len(filtered_hits)
+    
+    return api_response
 
 def clean_duplicate_books():
     """
@@ -454,6 +767,68 @@ def generate_pdf_data(book_list_df):
     buffer.seek(0)
     return buffer.getvalue()
 
+def render_floating_selection_box():
+    """
+    Render a floating selection summary with functional action buttons
+    """
+    if 'selected_books' not in st.session_state or not st.session_state.selected_books:
+        return
+    
+    selected_books = st.session_state.selected_books
+    selected_count = len(selected_books)
+    
+    # Create a floating box with functional buttons using Streamlit sidebar
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### 🎯 Quick Actions")
+        
+        # Show selection summary
+        selected_titles = [book.get('title', 'Unknown') for book in selected_books.values()]
+        
+        if selected_count <= 3:
+            titles_text = ', '.join(selected_titles)
+        else:
+            titles_text = f"{', '.join(selected_titles[:2])}, and {selected_count-2} more"
+        
+        st.success(f"📚 {selected_count} book{'s' if selected_count != 1 else ''} selected")
+        st.caption(titles_text)
+        
+        # Action buttons in sidebar
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("🎉 ADD", key="floating_add_button", type="primary", use_container_width=True):
+                added_count = 0
+                errors = []
+                
+                for book_id, book in st.session_state.selected_books.items():
+                    success, message = save_book_to_list(book)
+                    if success:
+                        added_count += 1
+                    else:
+                        errors.append(f"{book.get('title', 'Unknown')}: {message}")
+                
+                if added_count > 0:
+                    st.toast(f"🎉 Successfully added {added_count} book(s) to your list!", icon="📚")
+                    st.balloons()
+                
+                if errors:
+                    for error in errors:
+                        st.toast(f"⚠️ {error}", icon="⚠️")
+                
+                # Clear selections after adding
+                st.session_state.selected_books = {}
+                # Give toast time to display before rerunning
+                time.sleep(1.5)
+                st.rerun()
+        
+        with col2:
+            if st.button("❌ CLEAR", key="floating_clear_button", use_container_width=True):
+                st.session_state.selected_books = {}
+                st.rerun()
+        
+        st.markdown("---")
+
 def display_book_results(api_response):
     """
     Display book search results from Hardcover search API
@@ -473,7 +848,55 @@ def display_book_results(api_response):
     found_count = results.get('found', len(hits))
     st.success(f"Found {found_count:,} books! Showing first {len(hits)}:")
     
-    # Show selected books count and add button at the top
+    # Hidden buttons for floating box to trigger (placed at top for easy access)
+    if 'selected_books' in st.session_state and st.session_state.selected_books:
+        # Create invisible container for hidden buttons
+        with st.container():
+            st.markdown("""
+            <style>
+                .hidden-button {
+                    position: absolute;
+                    left: -9999px;
+                    opacity: 0;
+                    pointer-events: none;
+                }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                # Hidden button that floating box "Add All" will trigger
+                if st.button("", key="floating_add_all", help="Hidden button triggered by floating box"):
+                    added_count = 0
+                    errors = []
+                    
+                    for book_id, book in st.session_state.selected_books.items():
+                        success, message = save_book_to_list(book)
+                        if success:
+                            added_count += 1
+                        else:
+                            errors.append(f"{book.get('title', 'Unknown')}: {message}")
+                    
+                    if added_count > 0:
+                        st.toast(f"🎉 Successfully added {added_count} book(s) to your list!", icon="📚")
+                        st.balloons()
+                    
+                    if errors:
+                        for error in errors:
+                            st.toast(f"⚠️ {error}", icon="⚠️")
+                    
+                    # Clear selections after adding
+                    st.session_state.selected_books = {}
+                    time.sleep(1.5)
+                    st.rerun()
+            
+            with col2:
+                # Hidden button that floating box "Clear" will trigger
+                if st.button("", key="floating_clear_all", help="Hidden button triggered by floating box"):
+                    st.session_state.selected_books = {}
+                    st.rerun()
+    
+    # Show selected books count and add button at the top (original functionality preserved)
     if 'selected_books' in st.session_state and st.session_state.selected_books:
         selected_count = len(st.session_state.selected_books)
         
@@ -639,6 +1062,54 @@ def display_book_results(api_response):
     if not ('selected_books' in st.session_state and st.session_state.selected_books):
         st.markdown("---")
         st.info("💡 **Tip:** Select books using the checkboxes above. The 'Add Selected Books' button will appear at the top when you make selections!")
+    else:
+        # Show bottom "Add All Selected Books" button when books are selected
+        st.markdown("---")
+        st.subheader("📚 Selected Books Actions")
+        
+        selected_count = len(st.session_state.selected_books)
+        selected_titles = [book.get('title', 'Unknown') for book in st.session_state.selected_books.values()]
+        
+        # Show selected books summary
+        st.info(f"📚 {selected_count} book(s) selected for adding to your list")
+        if len(selected_titles) <= 5:
+            st.caption(f"Selected: {', '.join(selected_titles)}")
+        else:
+            st.caption(f"Selected: {', '.join(selected_titles[:3])}, and {len(selected_titles)-3} more...")
+        
+        # Action buttons
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("🎉 ADD ALL SELECTED BOOKS", type="primary", key="bottom_add_button", use_container_width=True):
+                added_count = 0
+                errors = []
+                
+                for book_id, book in st.session_state.selected_books.items():
+                    success, message = save_book_to_list(book)
+                    if success:
+                        added_count += 1
+                    else:
+                        errors.append(f"{book.get('title', 'Unknown')}: {message}")
+                
+                if added_count > 0:
+                    st.toast(f"🎉 Successfully added {added_count} book(s) to your list!", icon="📚")
+                    st.balloons()
+                
+                if errors:
+                    for error in errors:
+                        st.toast(f"⚠️ {error}", icon="⚠️")
+                
+                # Clear selections after adding
+                st.session_state.selected_books = {}
+                # Give toast time to display before rerunning
+                time.sleep(1.5)
+                st.rerun()
+        
+        with col2:
+            if st.button("❌ Clear All Selections", key="bottom_clear_button", use_container_width=True):
+                st.session_state.selected_books = {}
+                st.rerun()
 
 # Initialize session state
 if 'show_full_list' not in st.session_state:
@@ -653,14 +1124,14 @@ if 'show_random_selection' not in st.session_state:
     st.session_state.show_random_selection = False
 if 'random_selected_book' not in st.session_state:
     st.session_state.random_selected_book = None
+if 'selected_books' not in st.session_state:
+    st.session_state.selected_books = {}
 
 # Book list section in sidebar
 st.sidebar.header("Current Book List")
 
 try:
     book_list_df = load_book_list()
-    # st.sidebar.write(f"Debug: DataFrame shape: {book_list_df.shape}")
-    # st.sidebar.write(f"Debug: DataFrame empty: {book_list_df.empty}")
     
     if not book_list_df.empty:
         st.sidebar.write(f"**{len(book_list_df)} books chosen**")
@@ -685,6 +1156,9 @@ try:
 except Exception as e:
     st.sidebar.error(f"Error loading book list: {str(e)}")
     st.sidebar.write("No books chosen yet")
+
+# Add floating selection box in sidebar for quick actions
+render_floating_selection_box()
 
 # Navigation
 st.sidebar.markdown("---")
@@ -1070,46 +1544,74 @@ elif st.session_state.show_random_selection:
 elif not st.session_state.show_full_list:
     # Search interface
     st.header("Search for Books")
+    
+    # Add helpful info about field-specific searching
+    with st.expander("💡 Search Tips", expanded=False):
+        st.markdown("""
+        **Field-Specific Search:** Each field searches within that specific book attribute:
+        - **Author**: Searches only in author names
+        - **Title**: Searches only in book titles  
+        - **Genre**: Searches only in book genres
+        
+        **Examples:**
+        - Author: "Stephen King" → finds books by Stephen King specifically
+        - Genre: "Horror" → finds books categorized as Horror genre (not books with "horror" in title)
+        - Title: "The Shining" → finds books with "The Shining" in the title
+        
+        **Multiple Fields:** You can combine fields (e.g., Author + Genre) to narrow results.
+        """)
 
     # Create columns for better layout
     col1, col2, col3 = st.columns(3)
 
+    # Use session state keys to allow clearing of input fields
+    search_key_suffix = st.session_state.get('search_form_key', 0)
+
     with col1:
         author_search = st.text_input(
             "Author",
-            placeholder="Enter author name...",
-            help="Search by author name"
+            placeholder="e.g., Stephen King",
+            help="Search specifically in author names only",
+            key=f"author_search_{search_key_suffix}"
         )
 
     with col2:
         title_search = st.text_input(
             "Title", 
-            placeholder="Enter book title...",
-            help="Search by book title"
+            placeholder="e.g., The Shining",
+            help="Search specifically in book titles only",
+            key=f"title_search_{search_key_suffix}"
         )
 
     with col3:
         genre_search = st.text_input(
             "Genre",
-            placeholder="Enter genre...",
-            help="Search by genre (e.g., Fiction, Mystery, Romance)"
+            placeholder="e.g., Horror",
+            help="Search specifically in book genres only (not titles or descriptions)",
+            key=f"genre_search_{search_key_suffix}"
         )
 
-    # Search button
-    search_button = st.button("Search Books", type="primary")
-
-    # Display search criteria if any are entered
-    if author_search or title_search or genre_search:
-        st.subheader("Search Criteria:")
-        search_criteria = []
-        if author_search:
-            search_criteria.append(f"**Author:** {author_search}")
-        if title_search:
-            search_criteria.append(f"**Title:** {title_search}")
-        if genre_search:
-            search_criteria.append(f"**Genre:** {genre_search}")
-        
-        st.write(" | ".join(search_criteria))
+    # Search and Clear buttons
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        search_button = st.button("Search Books", type="primary", use_container_width=True)
+    
+    with col2:
+        if st.button("🗑️ Clear Search", use_container_width=True, help="Clear search fields and results"):
+            # Clear search results
+            if 'last_search_results' in st.session_state:
+                del st.session_state.last_search_results
+            if 'last_search_terms' in st.session_state:
+                del st.session_state.last_search_terms
+            if 'selected_books' in st.session_state:
+                del st.session_state.selected_books
+            
+            # Reset search form by changing the key suffix (forces new text inputs)
+            current_key = st.session_state.get('search_form_key', 0)
+            st.session_state.search_form_key = current_key + 1
+            
+            st.rerun()
 
     # Search results
     if search_button:

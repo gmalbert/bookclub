@@ -54,3 +54,4 @@ etc/jupyter/nbconfig/notebook.d/pydeck.json
 .github/copilot-instructions.md
 debug_api_response.json
 DEPLOYMENT.md
+.venv.code-workspace

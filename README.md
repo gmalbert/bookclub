@@ -53,6 +53,26 @@ This app helps book clubs find perfect books, organize reading lists, and track 
 - **Mobile-friendly** - Works perfectly on phones, tablets, and desktops
 - **Toast notifications** - Get instant feedback when you add or remove books
 - **Clean interface** - Simple, intuitive design that's easy to use
+- **Sidebar quick actions** - Add or clear selected books from anywhere on the page without scrolling
+
+## Recent Improvements (October 2025)
+
+### Enhanced Search Accuracy
+- **Field-specific search** - Improved search precision with dedicated author, title, and genre filtering
+- **Better results quality** - Client-side filtering ensures search results match your exact criteria
+- **Expanded pagination** - Increased from 54 to 221+ total results with multi-page fetching
+- **Cross-contamination fixes** - Eliminated issues where author searches returned books with search terms in titles
+
+### Improved User Interface
+- **Sidebar quick actions** - Always-visible "ADD" and "CLEAR" buttons for selected books
+- **No-scroll workflow** - Add books to your list from anywhere on the page without scrolling to top/bottom
+- **Streamlined buttons** - Clean, symmetrical action buttons with consistent styling
+- **Multiple access points** - Action buttons available in sidebar, top of results, and bottom of results
+
+### Technical Enhancements
+- **Dependency management** - Added reportlab for PDF export functionality
+- **Session state optimization** - Improved book selection tracking and state management
+- **Error handling** - Better handling of API responses and edge cases
 
 ## Getting Started
 
