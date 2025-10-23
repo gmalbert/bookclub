@@ -69,8 +69,8 @@ def load_api_token():
         except FileNotFoundError:
             pass
             
-        st.error("🔐 API token not found. Please configure HARDCOVER_API_TOKEN in Streamlit secrets or environment variables.")
-        st.info("For deployment, add your token to Streamlit Cloud secrets. For local development, set the HARDCOVER_API_TOKEN environment variable or use token.txt")
+        st.error("🔐 Authentication required. Please configure your book database access.")
+        st.info("Contact your administrator for setup instructions.")
         return None
         
     except Exception as e:
@@ -96,7 +96,7 @@ def safe_display_image(image_url, width=150, fallback_text="📚 Cover unavailab
 
 def search_hardcover_api(author=None, title=None, genre=None):
     """
-    Search Hardcover API for books based on criteria using field-specific search
+    Search for books based on criteria using field-specific search
     """
     token = load_api_token()
     if not token:
@@ -177,7 +177,7 @@ def search_hardcover_api(author=None, title=None, genre=None):
         "authorFilter": author,
         "titleFilter": title,
         "genreFilter": genre,
-        "perPage": 100,  # Increased from 30
+        "perPage": 50,  # Reduced for faster response
         "page": 1
     }
     
@@ -187,7 +187,7 @@ def search_hardcover_api(author=None, title=None, genre=None):
     }
 
     try:
-        response = requests.post(api_url, headers=headers, json=payload)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         result = response.json()
         
@@ -213,19 +213,47 @@ def search_hardcover_api(author=None, title=None, genre=None):
                     }
                 }
             }
-            st.info("✅ Using advanced field-specific search")
             return formatted_response
         
-        # If books query failed, try fallback search approach
-        # st.info("🔍 Using enhanced search with field-specific filtering")
-        return _fallback_search(author, title, genre, headers, api_url)
+        # If books query failed, try simplified fallback search approach
+        return _simplified_fallback_search(author, title, genre, headers, api_url)
         
     except requests.exceptions.RequestException as e:
-        st.error(f"API request failed: {str(e)}")
+        st.error(f"Search request failed: {str(e)}")
         return None
     except json.JSONDecodeError as e:
-        st.error(f"Failed to parse API response: {str(e)}")
+        st.error(f"Search response error: {str(e)}")
         return None
+
+def _simplified_fallback_search(author=None, title=None, genre=None, headers=None, api_url=None):
+    """
+    Fast simplified fallback search - optimized for speed over completeness
+    """
+    # Strategy: Single search with best query term, limited results
+    search_term = None
+    
+    if author:
+        # Use full author name for best match
+        search_term = f'"{author}"'
+    elif title:
+        # Use title search
+        search_term = f'"{title}"'
+    elif genre:
+        # Use genre search
+        search_term = genre
+    
+    if not search_term:
+        return None
+    
+    # Single fast search with limited results
+    results = _perform_single_search(search_term, headers, api_url, max_results=75)
+    
+    if results:
+        # Apply client-side filtering for accuracy
+        filtered_result = _apply_field_filters(results, author, title, genre)
+        return filtered_result
+    
+    return None
 
 def _fallback_search(author=None, title=None, genre=None, headers=None, api_url=None):
     """
@@ -251,25 +279,24 @@ def _fallback_search(author=None, title=None, genre=None, headers=None, api_url=
         else:
             author_queries.append(author)
         
-        # Try ALL author queries (don't exit early)
-        for query in author_queries:
-            results = _perform_single_search(query, headers, api_url, max_results=150)
+        # Try key author queries (reduced for speed)
+        for query in author_queries[:3]:  # Limit to first 3 queries for speed
+            results = _perform_single_search(query, headers, api_url, max_results=50)
             if results:
                 hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
                 all_results.extend(hits)
     
-    # Strategy 2: Title search (if provided)
+    # Strategy 2: Title search (if provided) - simplified
     if title:
-        title_queries = [f'"{title}"', title]  # Try both quoted and unquoted
-        for query in title_queries:
-            results = _perform_single_search(query, headers, api_url, max_results=100)
-            if results:
-                hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
-                all_results.extend(hits)
+        # Try just the main title query for speed
+        results = _perform_single_search(f'"{title}"', headers, api_url, max_results=50)
+        if results:
+            hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
+            all_results.extend(hits)
     
-    # Strategy 3: Genre search (if provided)
+    # Strategy 3: Genre search (if provided) - simplified  
     if genre:
-        results = _perform_single_search(genre, headers, api_url, max_results=100)
+        results = _perform_single_search(genre, headers, api_url, max_results=50)
         if results:
             hits = results.get('data', {}).get('search', {}).get('results', {}).get('hits', [])
             all_results.extend(hits)
@@ -300,14 +327,15 @@ def _fallback_search(author=None, title=None, genre=None, headers=None, api_url=
     
     return None
 
-def _perform_single_search(search_query, headers, api_url, max_results=100):
+def _perform_single_search(search_query, headers, api_url, max_results=75):
     """
-    Perform a single search query with pagination to get comprehensive results
+    Perform a single search query with optimized pagination for speed
     """
     all_hits = []
     page = 1
+    max_pages = 3  # Limit to 3 pages for speed (75 results max)
     
-    while len(all_hits) < max_results:
+    while len(all_hits) < max_results and page <= max_pages:
         query = """
         query SearchBooks($query: String!, $queryType: String!, $perPage: Int!, $page: Int!) {
             search(
@@ -338,7 +366,7 @@ def _perform_single_search(search_query, headers, api_url, max_results=100):
         }
 
         try:
-            response = requests.post(api_url, headers=headers, json=payload)
+            response = requests.post(api_url, headers=headers, json=payload, timeout=8)
             response.raise_for_status()
             result = response.json()
             
@@ -356,9 +384,6 @@ def _perform_single_search(search_query, headers, api_url, max_results=100):
                     
                 page += 1
                 
-                # Safety limit to prevent infinite loops
-                if page > 10:  # Max 250 results per query (10 pages * 25)
-                    break
             else:
                 break
                 
@@ -831,7 +856,7 @@ def render_floating_selection_box():
 
 def display_book_results(api_response):
     """
-    Display book search results from Hardcover search API
+    Display book search results
     """
     if not api_response or 'data' not in api_response:
         st.error("No valid data received from API")
@@ -1616,13 +1641,19 @@ elif not st.session_state.show_full_list:
     # Search results
     if search_button:
         if author_search or title_search or genre_search:
-            with st.spinner("🔍 Searching Hardcover API..."):
+            with st.spinner("🔍 Searching... This may take a few seconds"):
+                # Show immediate feedback
+                progress_text = st.empty()
+                progress_text.text("⚡ Searching book database...")
+                
                 # Call the search function
                 search_results = search_hardcover_api(
                     author=author_search if author_search else None,
                     title=title_search if title_search else None,
                     genre=genre_search if genre_search else None
                 )
+                
+                progress_text.empty()  # Clear progress text
                 
                 if search_results:
                     # Store search results in session state so they persist across reloads
@@ -1633,7 +1664,7 @@ elif not st.session_state.show_full_list:
                         'genre': genre_search
                     }
                 else:
-                    st.error("Failed to perform search. Please check your API token or try again.")
+                    st.error("Search failed. Please check your connection or try again.")
         else:
             st.warning("Please enter at least one search criteria.")
     
