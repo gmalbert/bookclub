@@ -1,10 +1,13 @@
 name = "bookclub-email-worker"
 main = "index.js"
+type = "javascript"
 compatibility_date = "2024-09-23"
 
 [vars]
 # Replace with your actual deployed book-processor URL after deploying it first
-BOOK_PROCESSOR_URL = "https://bookclub-book-processor.YOUR_SUBDOMAIN.workers.dev"
+BOOK_PROCESSOR_URL = "https://bookclub-book-processor.gmalbert.workers.dev"
+
+# https://bookclub-email-worker.gmalbert.workers.dev
 
 # Add the shared secret via:  wrangler secret put WORKER_SECRET
 # (must match the same value set on the book-processor worker)
