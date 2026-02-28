@@ -47,6 +47,7 @@ Thumbs.db
 
 # Data files (optional - uncomment if you don't want to commit your book selections)
 # book_selections.csv
+data_files/cache
 /Scripts
 *.cfg
 etc/jupyter/nbconfig/notebook.d/pydeck.json

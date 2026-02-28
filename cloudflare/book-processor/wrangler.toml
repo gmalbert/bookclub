@@ -1,0 +1,11 @@
+name = "bookclub-book-processor"
+main = "index.js"
+compatibility_date = "2024-09-23"
+
+[vars]
+GITHUB_REPO = "gmalbert/bookclub"
+
+# Store these via wrangler CLI (never put real values here):
+#   wrangler secret put HARDCOVER_API_TOKEN
+#   wrangler secret put GITHUB_TOKEN
+#   wrangler secret put WORKER_SECRET   (same value as on email-worker)

@@ -77,6 +77,47 @@ def load_api_token():
         st.error(f"Error loading API token: {str(e)}")
         return None
 
+def commit_file_to_github(filename, commit_message):
+    """
+    Commit an updated data file back to GitHub via the GitHub Contents API.
+    Requires GITHUB_TOKEN and GITHUB_REPO in st.secrets.
+    Fails silently so it never blocks the user if not configured.
+    """
+    try:
+        if not hasattr(st, 'secrets'):
+            return
+        github_token = st.secrets.get('GITHUB_TOKEN')
+        github_repo = st.secrets.get('GITHUB_REPO')  # e.g. "gmalbert/bookclub"
+        if not github_token or not github_repo:
+            return
+
+        # Read the file that was just saved locally
+        full_path = path.join(DATA_DIR, filename)
+        with open(full_path, 'rb') as f:
+            content_b64 = base64.b64encode(f.read()).decode('utf-8')
+
+        api_url = f"https://api.github.com/repos/{github_repo}/contents/data_files/{filename}"
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+
+        # Fetch the current file SHA (required by the API to update an existing file)
+        get_resp = requests.get(api_url, headers=headers, timeout=10)
+        current_sha = get_resp.json().get('sha') if get_resp.status_code == 200 else None
+
+        put_body = {'message': commit_message, 'content': content_b64}
+        if current_sha:
+            put_body['sha'] = current_sha
+
+        put_resp = requests.put(api_url, headers=headers, json=put_body, timeout=15)
+        if put_resp.status_code not in (200, 201):
+            st.warning(f"⚠️ GitHub sync failed ({put_resp.status_code}): {put_resp.json().get('message', '')}")
+
+    except Exception as e:
+        st.warning(f"⚠️ GitHub sync error: {str(e)}")
+
+
 def safe_display_image(image_url, width=150, fallback_text="📚 Cover unavailable"):
     """
     Safely display an image with proper error handling for Streamlit image loading issues
@@ -492,6 +533,7 @@ def clean_duplicate_books():
             if removed_count > 0:
                 # Save cleaned data back to CSV
                 df_cleaned.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
+                commit_file_to_github('book_selections.csv', f'chore: remove {removed_count} duplicate book(s)')
                 return removed_count
             return 0
     except Exception as e:
@@ -518,6 +560,7 @@ def remove_last_selection():
         
         # Save updated history back to CSV
         updated_history.to_csv(path.join(DATA_DIR, 'selection_history.csv'), index=False)
+        commit_file_to_github('selection_history.csv', f'chore: remove round {last_round} selection ({last_title})')
         
         return True, f"Removed '{last_title}' from Round {last_round}"
         
@@ -536,6 +579,7 @@ def clear_all_selections():
         
         # Save empty DataFrame to CSV
         empty_df.to_csv(path.join(DATA_DIR, 'selection_history.csv'), index=False)
+        commit_file_to_github('selection_history.csv', 'chore: clear all selections')
         
         return True, "All selections cleared"
         
@@ -600,6 +644,7 @@ def save_book_to_list(book_data):
         
         # Save to CSV
         df.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
+        commit_file_to_github('book_selections.csv', f'feat: add "{book_row["title"]}" to book list')
         return True, "Book added to your list!"
         
     except Exception as e:
@@ -725,6 +770,7 @@ def save_book_selection(book_data):
         
         # Save to CSV
         history_df.to_csv(path.join(DATA_DIR, 'selection_history.csv'), index=False)
+        commit_file_to_github('selection_history.csv', f'feat: select "{book_data["title"]}" for round {next_round}')
         return True, f"Book selected for Round {next_round}!"
         
     except Exception as e:
@@ -1762,6 +1808,7 @@ else:
                 # Remove books from DataFrame
                 updated_df = book_list_df[~book_list_df['id'].isin(st.session_state.books_to_remove)]
                 updated_df.to_csv(path.join(DATA_DIR, 'book_selections.csv'), index=False)
+                commit_file_to_github('book_selections.csv', f'chore: remove {len(st.session_state.books_to_remove)} book(s) from list')
                 
                 # Update session state
                 for book_id in st.session_state.books_to_remove:
