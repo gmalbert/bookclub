@@ -1257,7 +1257,7 @@ try:
                     st.caption(f"From: {_s(row.get('sender_email'))}")
                 if _s(row.get('original_url')):
                     orig_url = _s(row.get('original_url'))
-                    st.markdown(f"[🔗 View on Amazon]({orig_url})")
+                    st.markdown(f'<a href="{orig_url}" target="_blank" style="text-decoration:none;">🔗 View on Amazon</a>', unsafe_allow_html=True)
                 if st.button("🔍 Search for this book", key=f"q_search_{orig_idx}", use_container_width=True):
                     st.session_state.queue_search_pending = {
                         'title': str(row.get('scraped_title', '') or label),
