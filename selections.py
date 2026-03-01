@@ -1248,27 +1248,24 @@ try:
         for pos, (orig_idx, row) in enumerate(pending_items.iterrows()):
             label = row.get('scraped_title', '') or row.get('asin', '') or row.get('original_url', 'Unknown')
             author_hint = row.get('scraped_author', '')
-            with st.sidebar.expander(f"📖 {label[:40]}", expanded=False):
+            with st.sidebar.expander(f"📖 {label[:40]}", expanded=True):
                 if author_hint:
                     st.caption(f"Author hint: {author_hint}")
                 if row.get('sender_email'):
                     st.caption(f"From: {row['sender_email']}")
                 if row.get('original_url'):
                     st.caption(f"URL: {row['original_url'][:60]}")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("🔍 Search", key=f"q_search_{orig_idx}", use_container_width=True):
-                        st.session_state.queue_search_pending = {
-                            'title': str(row.get('scraped_title', '') or label),
-                            'author': str(row.get('scraped_author', '')),
-                            'queue_index': int(orig_idx),
-                        }
-                        st.session_state.show_full_list = False
-                        st.rerun()
-                with col_b:
-                    if st.button("✖ Dismiss", key=f"q_dismiss_{orig_idx}", use_container_width=True):
-                        dismiss_queue_item(int(orig_idx))
-                        st.rerun()
+                if st.button("🔍 Search for this book", key=f"q_search_{orig_idx}", use_container_width=True):
+                    st.session_state.queue_search_pending = {
+                        'title': str(row.get('scraped_title', '') or label),
+                        'author': str(row.get('scraped_author', '')),
+                        'queue_index': int(orig_idx),
+                    }
+                    st.session_state.show_full_list = False
+                    st.rerun()
+                if st.button("✖ Dismiss", key=f"q_dismiss_{orig_idx}", use_container_width=True):
+                    dismiss_queue_item(int(orig_idx))
+                    st.rerun()
 except Exception as e:
     pass  # Don't block the sidebar on queue errors
 
