@@ -1246,15 +1246,18 @@ try:
         st.sidebar.markdown(f"### 📬 Review Queue ({len(pending_items)})")
         st.sidebar.caption("Books that couldn't be added automatically via email.")
         for pos, (orig_idx, row) in enumerate(pending_items.iterrows()):
-            label = row.get('scraped_title', '') or row.get('asin', '') or row.get('original_url', 'Unknown')
-            author_hint = row.get('scraped_author', '')
+            def _s(v):
+                return '' if (v is None or (not isinstance(v, str) and pd.isna(v))) else str(v).strip()
+            label = _s(row.get('scraped_title')) or _s(row.get('asin')) or _s(row.get('original_url')) or 'Unknown'
+            author_hint = _s(row.get('scraped_author'))
             with st.sidebar.expander(f"📖 {label[:40]}", expanded=True):
                 if author_hint:
                     st.caption(f"Author hint: {author_hint}")
-                if row.get('sender_email'):
-                    st.caption(f"From: {row['sender_email']}")
-                if row.get('original_url'):
-                    st.caption(f"URL: {row['original_url'][:60]}")
+                if _s(row.get('sender_email')):
+                    st.caption(f"From: {_s(row.get('sender_email'))}")
+                if _s(row.get('original_url')):
+                    orig_url = _s(row.get('original_url'))
+                    st.markdown(f"[🔗 View on Amazon]({orig_url})")
                 if st.button("🔍 Search for this book", key=f"q_search_{orig_idx}", use_container_width=True):
                     st.session_state.queue_search_pending = {
                         'title': str(row.get('scraped_title', '') or label),
@@ -1267,7 +1270,7 @@ try:
                     dismiss_queue_item(int(orig_idx))
                     st.rerun()
 except Exception as e:
-    pass  # Don't block the sidebar on queue errors
+    st.sidebar.warning(f"Queue error: {e}")
 
 # Book list section in sidebar
 st.sidebar.header("Current Book List")
