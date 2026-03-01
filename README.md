@@ -74,6 +74,29 @@ This app helps book clubs find perfect books, organize reading lists, and track 
 - **Session state optimization** - Improved book selection tracking and state management
 - **Error handling** - Better handling of API responses and edge cases
 
+## March 2026 – Email Submission & Review Queue
+
+### Automated Email Ingestion
+- **Email your book links** – Send Amazon product sharing URLs to `books@bookclub-selections.com` and they’ll automatically be added.
+- **Cloudflare Workers** – A two‑worker pipeline parses incoming emails (`email-worker`), resolves ASINs, and communicates with the main app (`book-processor`).
+- **Robust parsing** – Handles quoted‑printable encoding, short `a.co`/`amzn.to` links, and Kindle‑only (B‑ASIN) titles via page scraping.
+
+### Review Queue for Failures
+- **Pending queue CSV** – Failed/unknown submissions are logged in `data_files/pending_queue.csv` on GitHub.
+- **In‑app review UI** – Sidebar shows a “📬 Review Queue” with expandable items, search buttons, and direct dismissal links.  Searches are auto‑filled with scraped metadata.
+- **One‑click fixes** – Search from the queue, add the correct book, and dismiss the entry without manual copy‑paste.
+
+### Data Persistence & Sync
+- **GitHub Contents API** – All CSV writes (`book_selections.csv`, `selection_history.csv`, `pending_queue.csv`) automatically commit back to the repo to survive Streamlit Cloud’s ephemeral filesystem.
+- **Secrets required** – `GITHUB_TOKEN` (repo contents write) and `GITHUB_REPO` must be set in Streamlit secrets or environment.
+
+### Infrastructure Notes
+- **Data flows** – Email → Cloudflare email-worker → book-processor → GitHub CSV → Streamlit app
+- **Local testing** – You can inject dummy rows into `pending_queue.csv` to exercise the review UI before sending real emails.
+- **Deployment** – Workers live under `cloudflare/email-worker` and `cloudflare/book-processor`; deploy with `wrangler deploy` from each subdirectory.
+
+Feel free to update these sections as new features are added or architecture evolves.
+
 ## Getting Started
 
 ### Building Your Book List
