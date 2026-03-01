@@ -1,6 +1,6 @@
 name = "bookclub-email-worker"
 main = "index.js"
-type = "javascript"
+# type = "javascript"
 compatibility_date = "2024-09-23"
 
 [vars]

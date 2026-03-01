@@ -586,6 +586,43 @@ def clear_all_selections():
     except Exception as e:
         return False, f"Error clearing selections: {str(e)}"
 
+def load_pending_queue():
+    """
+    Load the pending review queue from CSV file.
+    Returns a DataFrame with columns: queue_date, sender_email, original_url,
+    resolved_url, asin, scraped_title, scraped_author, status.
+    Only rows with status == 'pending' are considered actionable.
+    """
+    try:
+        df = pd.read_csv(path.join(DATA_DIR, 'pending_queue.csv'))
+        return df
+    except FileNotFoundError:
+        columns = ['queue_date', 'sender_email', 'original_url', 'resolved_url',
+                   'asin', 'scraped_title', 'scraped_author', 'status']
+        return pd.DataFrame(columns=columns)
+    except Exception:
+        columns = ['queue_date', 'sender_email', 'original_url', 'resolved_url',
+                   'asin', 'scraped_title', 'scraped_author', 'status']
+        return pd.DataFrame(columns=columns)
+
+
+def dismiss_queue_item(row_index):
+    """
+    Mark a queue item as dismissed and persist the change.
+    row_index is the integer position in the full DataFrame.
+    """
+    try:
+        df = load_pending_queue()
+        if row_index < 0 or row_index >= len(df):
+            return False, "Invalid queue index"
+        df.at[row_index, 'status'] = 'dismissed'
+        df.to_csv(path.join(DATA_DIR, 'pending_queue.csv'), index=False)
+        commit_file_to_github('pending_queue.csv', 'chore: dismiss queue item')
+        return True, "Item dismissed"
+    except Exception as e:
+        return False, f"Error dismissing item: {str(e)}"
+
+
 def load_book_list():
     """
     Load the current book list from CSV file
@@ -1197,6 +1234,43 @@ if 'random_selected_book' not in st.session_state:
     st.session_state.random_selected_book = None
 if 'selected_books' not in st.session_state:
     st.session_state.selected_books = {}
+if 'queue_search_pending' not in st.session_state:
+    st.session_state.queue_search_pending = None
+
+# Pending review queue section in sidebar
+try:
+    pending_df = load_pending_queue()
+    pending_items = pending_df[pending_df['status'] == 'pending'] if not pending_df.empty else pd.DataFrame()
+    if not pending_items.empty:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown(f"### 📬 Review Queue ({len(pending_items)})")
+        st.sidebar.caption("Books that couldn't be added automatically via email.")
+        for pos, (orig_idx, row) in enumerate(pending_items.iterrows()):
+            label = row.get('scraped_title', '') or row.get('asin', '') or row.get('original_url', 'Unknown')
+            author_hint = row.get('scraped_author', '')
+            with st.sidebar.expander(f"📖 {label[:40]}", expanded=False):
+                if author_hint:
+                    st.caption(f"Author hint: {author_hint}")
+                if row.get('sender_email'):
+                    st.caption(f"From: {row['sender_email']}")
+                if row.get('original_url'):
+                    st.caption(f"URL: {row['original_url'][:60]}")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("🔍 Search", key=f"q_search_{orig_idx}", use_container_width=True):
+                        st.session_state.queue_search_pending = {
+                            'title': str(row.get('scraped_title', '') or label),
+                            'author': str(row.get('scraped_author', '')),
+                            'queue_index': int(orig_idx),
+                        }
+                        st.session_state.show_full_list = False
+                        st.rerun()
+                with col_b:
+                    if st.button("✖ Dismiss", key=f"q_dismiss_{orig_idx}", use_container_width=True):
+                        dismiss_queue_item(int(orig_idx))
+                        st.rerun()
+except Exception as e:
+    pass  # Don't block the sidebar on queue errors
 
 # Book list section in sidebar
 st.sidebar.header("Current Book List")
@@ -1661,6 +1735,36 @@ elif not st.session_state.show_full_list:
             help="Search specifically in book genres only (not titles or descriptions)",
             key=f"genre_search_{search_key_suffix}"
         )
+
+    # Auto-fire search from queue
+    _queue_auto_search = st.session_state.get('queue_search_pending')
+    if _queue_auto_search and not st.session_state.get('last_search_results'):
+        _q_title = _queue_auto_search.get('title', '')
+        _q_author = _queue_auto_search.get('author', '')
+        with st.spinner("🔍 Searching for queued book..."):
+            _q_results = search_hardcover_api(
+                author=_q_author if _q_author else None,
+                title=_q_title if _q_title else None,
+            )
+        if _q_results:
+            st.session_state.last_search_results = _q_results
+            st.session_state.last_search_terms = {
+                'author': _q_author,
+                'title': _q_title,
+                'genre': ''
+            }
+            st.rerun()
+        else:
+            st.warning(f"No results found for '{_q_title}'. Try adjusting the search fields below.")
+
+    # Show dismiss banner if a queue item drove us here
+    if st.session_state.get('queue_search_pending') and st.session_state.get('last_search_results'):
+        _qi = st.session_state.queue_search_pending
+        st.info(f"📬 Searching for queued book: **{_qi.get('title', '')}**")
+        if st.button("✅ Mark queue item as dismissed (book added)", key="queue_dismiss_after_add"):
+            dismiss_queue_item(_qi['queue_index'])
+            st.session_state.queue_search_pending = None
+            st.rerun()
 
     # Search and Clear buttons
     col1, col2 = st.columns([3, 1])

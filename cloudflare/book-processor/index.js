@@ -17,6 +17,7 @@
 const HARDCOVER_API = "https://api.hardcover.app/v1/graphql";
 const GH_API_BASE = "https://api.github.com";
 const CSV_PATH = "data_files/book_selections.csv";
+const QUEUE_PATH = "data_files/pending_queue.csv";
 
 const SEARCH_QUERY = `
 query SearchBooks($query: String!, $perPage: Int!) {
@@ -55,17 +56,46 @@ export default {
     try {
       // 1. Resolve short links → full URL
       const fullUrl = await resolveUrl(amazonUrl);
+      console.log(`[book-processor] original URL: ${amazonUrl}`);
+      console.log(`[book-processor] resolved URL: ${fullUrl}`);
 
       // 2. Extract ASIN
       const asin = extractAsin(fullUrl);
       if (!asin) {
-        return new Response("Could not extract ASIN from URL", { status: 422 });
+        console.log(`[book-processor] could not extract ASIN, queuing for review`);
+        await appendToGithubQueue({
+          sender_email: senderEmail,
+          original_url: amazonUrl,
+          resolved_url: fullUrl,
+          asin: "",
+          scraped_title: "",
+          scraped_author: "",
+        }, env);
+        return new Response(
+          JSON.stringify({ queued: true, message: "Could not extract ASIN — added to review queue" }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
       }
+      console.log(`[book-processor] extracted ASIN: ${asin}`);
 
       // 3. Search Hardcover (ASIN == ISBN-10 for books)
       const bookData = await searchHardcover(asin, env.HARDCOVER_API_TOKEN);
       if (!bookData) {
-        return new Response(`No Hardcover result for ASIN ${asin}`, { status: 404 });
+        // Scrape title/author for the queue so reviewer has context
+        const { title, author } = await scrapeAmazonTitleAuthor(asin);
+        console.log(`[book-processor] no Hardcover result, queuing: "${title}" by "${author}"`);
+        await appendToGithubQueue({
+          sender_email: senderEmail,
+          original_url: amazonUrl,
+          resolved_url: fullUrl,
+          asin,
+          scraped_title: title,
+          scraped_author: author,
+        }, env);
+        return new Response(
+          JSON.stringify({ queued: true, message: `No Hardcover result for "${title || asin}" — added to review queue` }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
       }
 
       // 4. Add to GitHub CSV
@@ -86,20 +116,27 @@ export default {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Follow up to 5 redirects to resolve a short-link into its final URL.
+ * Follow up to 10 redirects to resolve a short-link into its final URL.
+ * Uses GET with a browser-like User-Agent since Amazon often ignores HEAD.
  */
 async function resolveUrl(url) {
   let current = url;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 10; i++) {
     const resp = await fetch(current, {
-      method: "HEAD",
+      method: "GET",
       redirect: "manual",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          + "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      },
     });
     const location = resp.headers.get("location");
     if (!location) break;
-    current = location;
-    // Stop once we land on amazon.com
-    if (current.includes("amazon.com")) break;
+    // Make relative redirects absolute
+    current = location.startsWith("http") ? location : new URL(location, current).href;
+    // Stop once we land on a full amazon.com product URL with an ASIN candidate
+    if (current.includes("amazon.com") && (/\/dp\/|\/(gp\/)|B[A-Z0-9]{9}/.test(current))) break;
   }
   return current;
 }
@@ -110,10 +147,14 @@ async function resolveUrl(url) {
  */
 function extractAsin(url) {
   const patterns = [
-    /\/dp\/([A-Z0-9]{10})/i,
-    /\/gp\/product\/([A-Z0-9]{10})/i,
-    /\/product\/([A-Z0-9]{10})/i,
-    /\/([A-Z0-9]{10})(?:[/?]|$)/,
+    /\/dp\/([A-Z0-9]{10})/i,               // /dp/ASIN  (most common)
+    /\/gp\/product\/([A-Z0-9]{10})/i,      // /gp/product/ASIN
+    /\/gp\/aw\/d\/([A-Z0-9]{10})/i,        // mobile /gp/aw/d/ASIN
+    /\/product\/([A-Z0-9]{10})/i,          // /product/ASIN
+    /\/exec\/obidos\/(?:ASIN\/)?([A-Z0-9]{10})/i, // old-style obidos links
+    /[?&]asin=([A-Z0-9]{10})/i,            // ?asin= query param
+    /[?&]keywords=([A-Z0-9]{10})(?:&|$)/i, // ?keywords=ASIN
+    /\/(B[A-Z0-9]{9})(?:[\/?#]|$)/,        // bare B-ASIN in path (B always starts ASINs)
   ];
   for (const re of patterns) {
     const m = url.match(re);
@@ -124,17 +165,76 @@ function extractAsin(url) {
 
 /**
  * Search Hardcover for a book using the ASIN as an ISBN query.
- * Falls back to a broader search if the ISBN query returns nothing.
+ * If the ASIN is a Kindle/B-ASIN (not an ISBN), falls back to scraping the
+ * Amazon page for the title and searching Hardcover by title instead.
  * Returns a normalised book object or null.
  */
 async function searchHardcover(asin, token) {
-  // Try direct ISBN match first
+  // Try direct ISBN/ASIN search first (works for print editions)
   let hit = await runHardcoverSearch(asin, token, 5);
-  if (!hit) {
-    // Nothing found — the ASIN might not be ISBN-10; return null
-    return null;
+  if (hit) return normaliseHit(hit);
+
+  // B-ASINs are Kindle/digital — try scraping the Amazon page for title+author
+  if (asin.startsWith("B")) {
+    console.log(`[book-processor] B-ASIN detected, fetching Amazon page for title...`);
+    const { title, author } = await scrapeAmazonTitleAuthor(asin);
+    if (title) {
+      console.log(`[book-processor] scraped title: "${title}", author: "${author}"`);
+      const query = author ? `${title} ${author}` : title;
+      hit = await runHardcoverSearch(query, token, 5);
+      if (hit) return normaliseHit(hit);
+    }
   }
-  return normaliseHit(hit);
+
+  return null;
+}
+
+/**
+ * Fetch an Amazon product page and extract the book title and author
+ * from the page's <title> tag or OG meta tags.
+ * Returns { title, author } — either may be an empty string if not found.
+ */
+async function scrapeAmazonTitleAuthor(asin) {
+  try {
+    const url = `https://www.amazon.com/dp/${asin}`;
+    const resp = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          + "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    if (!resp.ok) return { title: "", author: "" };
+    const html = await resp.text();
+
+    // Try og:title first (usually "Book Title: Subtitle")
+    let title = "";
+    const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+    if (ogTitle) {
+      title = ogTitle[1].trim();
+    } else {
+      // Fall back to <title> tag — Amazon format: "Amazon.com: Book Title: ..."
+      const titleTag = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleTag) {
+        title = titleTag[1]
+          .replace(/^Amazon\.com\s*:\s*/i, "")
+          .replace(/\s*:\s*Amazon\.com.*$/i, "")
+          .replace(/\s*\(.*\)\s*$/, "") // strip "(Kindle Edition)" etc.
+          .trim();
+      }
+    }
+
+    // Try to extract author from the byline span
+    let author = "";
+    const byline = html.match(/class="[^"]*byline[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]{3,60})<\/span>/i);
+    if (byline) author = byline[1].replace(/^by\s+/i, "").trim();
+
+    return { title, author };
+  } catch (e) {
+    console.log(`[book-processor] Amazon scrape failed: ${e.message}`);
+    return { title: "", author: "" };
+  }
 }
 
 async function runHardcoverSearch(query, token, perPage) {
@@ -254,6 +354,47 @@ function buildGhHeaders(token) {
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "bookclub-worker",
   };
+}
+
+/**
+ * Append a failed submission to pending_queue.csv in GitHub for manual review.
+ */
+async function appendToGithubQueue(entry, env) {
+  try {
+    const apiUrl = `${GH_API_BASE}/repos/${env.GITHUB_REPO}/contents/${QUEUE_PATH}`;
+    const headers = buildGhHeaders(env.GITHUB_TOKEN);
+
+    const getResp = await fetch(apiUrl, { headers });
+    if (!getResp.ok) return; // fail silently — don't block the response
+    const fileJson = await getResp.json();
+    const currentSha = fileJson.sha;
+    const csvText = atob(fileJson.content.replace(/\n/g, ""));
+
+    const newRow = toCsvRow([
+      new Date().toISOString().replace("T", " ").slice(0, 19),
+      entry.sender_email ?? "",
+      entry.original_url ?? "",
+      entry.resolved_url ?? "",
+      entry.asin ?? "",
+      entry.scraped_title ?? "",
+      entry.scraped_author ?? "",
+      "pending",
+    ]);
+
+    const updatedCsv = csvText.trimEnd() + "\n" + newRow + "\n";
+
+    await fetch(apiUrl, {
+      method: "PUT",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: `chore: queue "${entry.scraped_title || entry.asin || entry.original_url}" for review`,
+        content: btoa(unescape(encodeURIComponent(updatedCsv))),
+        sha: currentSha,
+      }),
+    });
+  } catch (e) {
+    console.log(`[book-processor] queue write failed: ${e.message}`);
+  }
 }
 
 /**

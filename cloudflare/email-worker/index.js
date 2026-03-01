@@ -10,7 +10,7 @@
 
 // Matches amazon.com product URLs and common short-link forms
 const AMAZON_URL_RE =
-  /https?:\/\/(?:www\.amazon\.com\/[^\s"'<>\])}]+|amzn\.to\/[A-Za-z0-9]+|a\.co\/[A-Za-z0-9]+)/gi;
+  /https?:\/\/(?:www\.amazon\.com\/[^\s"'<>\])}]+|amzn\.to\/[^\s"'<>\])}]+|a\.co\/[^\s"'<>\])}]+)/gi;
 
 export default {
   async email(message, env, _ctx) {
@@ -23,8 +23,11 @@ export default {
       return;
     }
 
-    // Strip any trailing punctuation that got captured
-    const amazonUrl = matches[0].replace(/[)>\].,;'"]+$/, "");
+    // Strip trailing punctuation AND quoted-printable artifacts (=, =3D, etc.)
+    const amazonUrl = matches[0]
+      .replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))) // decode =XX
+      .replace(/=+$/, "")          // strip trailing bare = (soft line-break)
+      .replace(/[)>\].,;'"]+$/, ""); // strip trailing punctuation
 
     const payload = {
       amazonUrl,
